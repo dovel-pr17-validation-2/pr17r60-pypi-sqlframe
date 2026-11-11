@@ -1,0 +1,204 @@
+import typing as t
+from unittest.mock import patch
+
+import pytest
+
+from sqlframe.standalone import functions as F
+from sqlframe.standalone import types
+from sqlframe.standalone.session import StandaloneSession
+
+pytest_plugins = ["tests.common_fixtures", "tests.unit.standalone.fixtures"]
+
+
+def test_cdf_one_row(standalone_session: StandaloneSession, compare_sql: t.Callable):
+    df = standalone_session.createDataFrame([[1, 2]], ["cola", "colb"])
+    expected = "SELECT CAST(`a1`.`cola` AS BIGINT) AS `cola`, CAST(`a1`.`colb` AS BIGINT) AS `colb` FROM VALUES (1, 2) AS `a1`(`cola`, `colb`)"
+    compare_sql(df, expected)
+
+
+def test_cdf_multiple_rows(standalone_session: StandaloneSession, compare_sql: t.Callable):
+    df = standalone_session.createDataFrame([[1, 2], [3, 4], [None, 6]], ["cola", "colb"])
+    expected = "SELECT CAST(`a1`.`cola` AS BIGINT) AS `cola`, CAST(`a1`.`colb` AS BIGINT) AS `colb` FROM VALUES (1, 2), (3, 4), (NULL, 6) AS `a1`(`cola`, `colb`)"
+    compare_sql(df, expected)
+
+
+def test_cdf_no_schema(standalone_session: StandaloneSession, compare_sql: t.Callable):
+    df = standalone_session.createDataFrame([[1, 2], [3, 4], [None, 6]])
+    expected = "SELECT CAST(`a1`.`_1` AS BIGINT) AS `_1`, CAST(`a1`.`_2` AS BIGINT) AS `_2` FROM VALUES (1, 2), (3, 4), (NULL, 6) AS `a1`(`_1`, `_2`)"
+    compare_sql(df, expected)
+
+
+def test_cdf_row_mixed_primitives(standalone_session: StandaloneSession, compare_sql: t.Callable):
+    df = standalone_session.createDataFrame([[1, 10.1, "test", False, None]])
+    expected = "SELECT CAST(`a1`.`_1` AS BIGINT) AS `_1`, `a1`.`_2` AS `_2`, CAST(`a1`.`_3` AS STRING) AS `_3`, `a1`.`_4` AS `_4`, `a1`.`_5` AS `_5` FROM VALUES (1, 10.1, 'test', FALSE, NULL) AS `a1`(`_1`, `_2`, `_3`, `_4`, `_5`)"
+    compare_sql(df, expected)
+
+
+def test_cdf_dict_rows(standalone_session: StandaloneSession, compare_sql: t.Callable):
+    df = standalone_session.createDataFrame(
+        [{"cola": 1, "colb": "test"}, {"cola": 2, "colb": "test2"}]
+    )
+    expected = "SELECT CAST(`a1`.`cola` AS BIGINT) AS `cola`, CAST(`a1`.`colb` AS STRING) AS `colb` FROM VALUES (1, 'test'), (2, 'test2') AS `a1`(`cola`, `colb`)"
+    compare_sql(df, expected)
+
+
+def test_cdf_dict_rows_missing_columns(
+    standalone_session: StandaloneSession, compare_sql: t.Callable
+):
+    df = standalone_session.createDataFrame(
+        [{"name": "xxx"}, {"name": "yyy"}],
+        schema={"_id": "string", "name": "string"},
+    )
+    expected = "SELECT CAST(`a1`.`_id` AS STRING) AS `_id`, CAST(`a1`.`name` AS STRING) AS `name` FROM VALUES (NULL, 'xxx'), (NULL, 'yyy') AS `a1`(`_id`, `name`)"
+    compare_sql(df, expected)
+
+
+def test_cdf_dict_rows_reordered_keys(
+    standalone_session: StandaloneSession, compare_sql: t.Callable
+):
+    df = standalone_session.createDataFrame(
+        [{"colb": "test", "cola": 1}],
+        schema={"cola": "bigint", "colb": "string"},
+    )
+    expected = "SELECT CAST(`a1`.`cola` AS BIGINT) AS `cola`, CAST(`a1`.`colb` AS STRING) AS `colb` FROM VALUES (1, 'test') AS `a1`(`cola`, `colb`)"
+    compare_sql(df, expected)
+
+
+def test_cdf_str_schema(standalone_session: StandaloneSession, compare_sql: t.Callable):
+    df = standalone_session.createDataFrame([[1, "test"]], "cola INT, colb STRING")
+    expected = "SELECT `a1`.`cola` AS `cola`, CAST(`a1`.`colb` AS STRING) AS `colb` FROM VALUES (1, 'test') AS `a1`(`cola`, `colb`)"
+    compare_sql(df, expected)
+
+
+def test_typed_schema_basic(standalone_session: StandaloneSession, compare_sql: t.Callable):
+    schema = types.StructType(
+        [
+            types.StructField("cola", types.IntegerType()),
+            types.StructField("colb", types.StringType()),
+        ]
+    )
+    df = standalone_session.createDataFrame([[1, "test"]], schema)
+    expected = "SELECT `a1`.`cola` AS `cola`, CAST(`a1`.`colb` AS STRING) AS `colb` FROM VALUES (1, 'test') AS `a1`(`cola`, `colb`)"
+    compare_sql(df, expected)
+
+
+def test_single_value_rows(standalone_session: StandaloneSession, compare_sql: t.Callable):
+    df = standalone_session.createDataFrame([1, 2, 3], "int")
+    expected = "SELECT `a1`.`value` AS `value` FROM VALUES (1), (2), (3) AS `a1`(`value`)"
+    compare_sql(df, expected)
+
+
+def test_row_value(standalone_session: StandaloneSession, compare_sql: t.Callable):
+    df = standalone_session.createDataFrame([types.Row(cola=1, colb="test")])
+    expected = "SELECT CAST(`a1`.`cola` AS BIGINT) AS `cola`, CAST(`a1`.`colb` AS STRING) AS `colb` FROM VALUES (1, 'test') AS `a1`(`cola`, `colb`)"
+    compare_sql(df, expected)
+
+
+def test_typed_schema_nested_map(standalone_session: StandaloneSession, compare_sql: t.Callable):
+    schema = types.StructType(
+        [
+            types.StructField(
+                "cola",
+                types.MapType(
+                    keyType=types.IntegerType(),
+                    valueType=types.StringType(),
+                ),
+            )
+        ]
+    )
+    df = standalone_session.createDataFrame([[{"sub_cola": 1, "sub_colb": "test"}]], schema)
+    expected = "SELECT CAST(`a1`.`cola` AS MAP<INT, STRING>) AS `cola` FROM VALUES (MAP('sub_cola', 1, 'sub_colb', 'test')) AS `a1`(`cola`)"
+
+    compare_sql(df, expected)
+
+
+def test_nested_struct(standalone_session: StandaloneSession, compare_sql: t.Callable):
+    df = standalone_session.createDataFrame([[types.Row(cola=1, colb="test")]])
+    expected = "SELECT CAST(`a1`.`_1` AS STRUCT<`cola`: BIGINT, `colb`: STRING>) AS `_1` FROM VALUES (STRUCT(1 AS `cola`, 'test' AS `colb`)) AS `a1`(`_1`)"
+    compare_sql(df, expected)
+
+
+def test_dict_as_map(standalone_session: StandaloneSession, compare_sql: t.Callable):
+    df = standalone_session.createDataFrame([[{"key": "value"}]])
+    expected = "SELECT CAST(`a1`.`_1` AS MAP<STRING, STRING>) AS `_1` FROM VALUES (MAP('key', 'value')) AS `a1`(`_1`)"
+    compare_sql(df, expected)
+
+
+def test_dict_as_struct(standalone_session: StandaloneSession, compare_sql: t.Callable):
+    with patch.object(type(standalone_session), "DICT_AS_MAP", False):
+        df = standalone_session.createDataFrame(
+            t.cast(
+                t.Sequence[t.Dict[str, t.Any]],
+                [{"country": "DE", "title": {"headline": "haferflocki"}}],
+            )
+        )
+        expected = "SELECT CAST(`a1`.`country` AS STRING) AS `country`, CAST(`a1`.`title` AS STRUCT<`headline`: STRING>) AS `title` FROM VALUES ('DE', STRUCT('haferflocki' AS `headline`)) AS `a1`(`country`, `title`)"
+        compare_sql(df, expected)
+
+
+def test_nested_dict_as_struct(standalone_session: StandaloneSession, compare_sql: t.Callable):
+    with patch.object(type(standalone_session), "DICT_AS_MAP", False):
+        df = standalone_session.createDataFrame(t.cast(t.Any, [[{"a": {"b": 1}}]]))
+        expected = "SELECT CAST(`a1`.`_1` AS STRUCT<`a`: STRUCT<`b`: BIGINT>>) AS `_1` FROM VALUES (STRUCT(STRUCT(1 AS `b`) AS `a`)) AS `a1`(`_1`)"
+        compare_sql(df, expected)
+
+
+def test_sql_select_only(standalone_session: StandaloneSession, compare_sql: t.Callable):
+    query = "SELECT cola, colb FROM table"
+    standalone_session.catalog.add_table("table", {"cola": "string", "colb": "string"})
+    df = standalone_session.sql(query)
+    compare_sql(
+        df, "SELECT `table`.`cola` AS `cola`, `table`.`colb` AS `colb` FROM `table` AS `table`"
+    )
+
+
+def test_sql_with_aggs(standalone_session: StandaloneSession, compare_sql: t.Callable):
+    query = "SELECT cola, colb FROM table"
+    standalone_session.catalog.add_table("table", {"cola": "string", "colb": "string"})
+    df = standalone_session.sql(query).groupBy(F.col("cola")).agg(F.sum("colb"))
+    compare_sql(
+        df,
+        "WITH `t34970089` AS (SELECT `table`.`cola` AS `cola`, `table`.`colb` AS `colb` FROM `table` AS `table`), `t50917871` AS (SELECT `cola`, `colb` FROM `t34970089`) SELECT `cola`, SUM(`colb`) AS `sum__colb__` FROM `t50917871` GROUP BY `cola`",
+        pretty=False,
+        optimize=False,
+    )
+
+
+def test_sql_create(standalone_session: StandaloneSession, compare_sql: t.Callable):
+    query = "CREATE TABLE new_table AS WITH t1 AS (SELECT cola, colb FROM table) SELECT cola, colb, FROM t1"
+    standalone_session.catalog.add_table("table", {"cola": "string", "colb": "string"})
+    df = standalone_session.sql(query)
+    expected = "CREATE TABLE `new_table` AS SELECT `table`.`cola` AS `cola`, `table`.`colb` AS `colb` FROM `table` AS `table`"
+    compare_sql(df, expected)
+
+
+def test_sql_insert(standalone_session: StandaloneSession, compare_sql: t.Callable):
+    query = (
+        "WITH t1 AS (SELECT cola, colb FROM table) INSERT INTO new_table SELECT cola, colb FROM t1"
+    )
+    standalone_session.catalog.add_table("table", {"cola": "string", "colb": "string"})
+    df = standalone_session.sql(query)
+    expected = "INSERT INTO `new_table` SELECT `table`.`cola` AS `cola`, `table`.`colb` AS `colb` FROM `table` AS `table`"
+    compare_sql(df, expected)
+
+
+def test_session_create_builder_patterns():
+    assert StandaloneSession.builder.appName("abc").getOrCreate() == StandaloneSession()
+
+
+def test_builder_getattr_does_not_swallow_property_errors():
+    """Test that AttributeError raised inside a session property is not silently
+    swallowed by Builder.__getattr__, which would cause getOrCreate() to return
+    the Builder instead of raising. See: https://github.com/eakmanrq/sqlframe/issues/558"""
+    from sqlframe.base.session import _BaseSession
+
+    class FailingBuilder(_BaseSession.Builder):
+        @property
+        def session(self):
+            hostname = None
+            # Simulates the error from databricks-sql-connector when params are missing
+            hostname.startswith("https://")  # type: ignore[union-attr]
+
+    builder = FailingBuilder()
+    with pytest.raises(RuntimeError):
+        builder.getOrCreate()
